@@ -1,0 +1,20 @@
+name: young-outliers
+channels:
+  - anaconda
+  - conda-forge
+dependencies:
+  - jupyter
+  - pandas
+  - seaborn
+  - pyarrow
+  - beautifulsoup4
+  - requests
+  - scikit-learn
+  - lxml
+  - pillow
+  - openpyxl
+  - pip
+  - pip:
+      - mplsoccer
+      - shap      
+      
