@@ -69,6 +69,11 @@ def get_fbref_big5(url):
 def get_fbref_player_dob(url):
     soup = get_soup(url)
     info = soup.findAll("div", {"class": "players"})[0]
+    squad = [p for p in info.find_all('p') if 'Club' in p.getText()]
+    if len(squad) == 0:
+        squad = None
+    else:
+        squad = squad[0].find('a').contents[0]
     if info.find("span", itemprop="birthDate"):
         dob = pd.to_datetime(info.find("span", itemprop="birthDate")['data-birth'])
     else:
@@ -77,7 +82,7 @@ def get_fbref_player_dob(url):
     name = info.find('p').getText()
     if name == '':
         name = info.find('span').getText()
-    return name, dob
+    return name, dob, squad
 
 def get_tm_team_league(soup):
     """Get the team name and league from a team page."""
