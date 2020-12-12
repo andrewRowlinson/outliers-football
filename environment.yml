@@ -1,4 +1,4 @@
-name: young-outliers
+name: outliers-football
 channels:
   - anaconda
   - conda-forge
