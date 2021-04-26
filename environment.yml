@@ -6,7 +6,7 @@ dependencies:
   - jupyter
   - pandas
   - seaborn
-  - pyarrow
+  - conda-forge::pyarrow
   - beautifulsoup4
   - requests
   - scikit-learn
