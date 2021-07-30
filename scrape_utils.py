@@ -75,7 +75,7 @@ def get_fbref_player_dob(url):
     else:
         squad = squad[0].find('a').contents[0]
     if info.find("span", itemprop="birthDate"):
-        dob = pd.to_datetime(info.find("span", itemprop="birthDate")['data-birth'])
+        dob = pd.to_datetime(info.find("span", itemprop="birthDate").contents[0].strip())
     else:
         dob = pd.to_datetime(np.nan)
     info = BeautifulSoup(str(info)[:str(info).find('Position')], 'html.parser')
@@ -88,16 +88,6 @@ def get_tm_team_league(soup):
     """Get the team name and league from a team page."""
     team_name, league = soup.find("meta", attrs={'name':'keywords'})['content'].split(',')[:2]
     return team_name, league
-
-def format_tm_market_value(df):
-    """Helper function to format the market value in a dataframe from a string (euros) to millons. """
-    df['market_value'] = df['market_value'].str.replace('€', '')
-    mask_thousand = df['market_value'].str[-3:] == 'Th.'
-    df['market_value'] = df['market_value'].str.replace('Th.', '').str.replace('m', '')
-    df['market_value'] = pd.to_numeric(df['market_value'], errors='coerce')
-    df.loc[mask_thousand, 'market_value'] = df.loc[mask_thousand, 'market_value'] / 1000
-    df.rename({'market_value': 'market_value_euro_millions'}, axis='columns', inplace=True)
-    return df
 
 def get_tm_team_links(url):
     """Get links for each team from the league page."""

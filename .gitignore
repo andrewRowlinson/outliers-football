@@ -131,4 +131,5 @@ dmypy.json
 # data
 *.parquet
 *.xlsx
+*.png
 
