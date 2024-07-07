@@ -1,7 +1,54 @@
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 import pandas as pd
 import numpy as np
+from io import StringIO
+import os
+import re
+
+URL_BASE = 'https://fbref.com/en/comps/'
+COMP_YEAR = {2024: '2023-2024',
+             2023: '2022-2023',
+             2022: '2021-2022',
+            }
+COMP_ID = {'england1': '9', 
+           'england2': '10', 
+           'italy1': '11', 
+           'spain1': '12', 
+           'france1': '13', 
+           'spain2': '17', 
+           'germany1': '20', 
+           'usa1': '22', 
+           'netherlands1': '23', 
+           'brazil1': '24', 
+           'mexico1': '31', 
+           'portugal1': '32', 
+           'belgium1': '37', 
+           'germany2': '33', 
+           'france2': '60', 
+           'argentina1': '21', 
+           'italy2': '18', 
+          }
+COMP_NAME = {'england1': 'Premier-League', 
+             'england2': 'Championship', 
+             'italy1': 'Serie-A', 
+             'spain1': 'La-Liga', 
+             'france1': 'Ligue-1', 
+             'spain2': 'Segunda-Division', 
+             'germany1': 'Bundesliga', 
+             'usa1': 'Major-League-Soccer-Stats', 
+             'netherlands1': 'Eredivisie', 
+             'brazil1': 'Serie-A', 
+             'mexico1': 'Liga-MX', 
+             'portugal1': 'Primeira-Liga', 
+             'belgium1': 'Belgian-Pro-League', 
+             'germany2': '2-Bundesliga', 
+             'france2': 'Ligue-2', 
+             'argentina1': 'Liga-Profesional-Argentina', 
+             'italy2': 'Serie-B',
+            }
+VALID_STATS = ['stats', 'keepersadv', 'keepers', 'shooting', 'passing', 'passing_types',
+               'defense', 'gca', 'possession', 'playingtime', 'misc']
 
 def get_soup(url):
     headers = {'User-Agent': ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -10,61 +57,65 @@ def get_soup(url):
     r.encoding = 'unicode-escape'
     return BeautifulSoup(r.content, 'html.parser')
 
-def get_data_from_table(table, data_type, skip_rows):
-    """Helper method to get the data from a table. """
-    # https://stackoverflow.com/questions/42285417/how-to-preserve-links-when-scraping-a-table-with-beautiful-soup-and-pandas
-    if data_type == 'title':
-        data = [[td.a.get('title') if td.find('a') else ''.join(td.stripped_strings) for td in row.find_all('td')]
-                for row in table.find_all('tr')]
-    if data_type == 'link':
-        data = [[td.a['href'] if td.find('a') else ''.join(td.stripped_strings) for td in row.find_all('td')]
-                for row in table.find_all('tr')]
-    else:
-        data = [[td.a.string if td.find('a') else ''.join(td.stripped_strings) for td in row.find_all('td')]
-                for row in table.find_all('tr')]   
-    
-    data = [d for d in data if len(d)!=0][0::skip_rows]
-    
-    return data
+def get_url(competition, year, stat):
+    assert stat in VALID_STATS, f'{stat} not in {VALID_STATS}'
+    assert year in COMP_YEAR.keys(), f'{year} not in {list(COMP_YEAR.keys())}'
+    assert competition in COMP_NAME.keys(), f'{competition} not in {list(COMP_NAME.keys())}'
+    comp_name = COMP_NAME[competition]
+    comp_id = COMP_ID[competition]
+    comp_year = COMP_YEAR[year]
+    return f'{URL_BASE}{comp_id}/{comp_year}/{stat}/{comp_year}-{comp_name}-Stats'
 
-def get_fbref_big5(url):
-    soup = get_soup(url)
-    df = pd.read_html(str(soup))[0]
-    
-    # column names - collapse the multiindex
-    col1 = list(df.columns.get_level_values(0))
-    col1 = ['' if c[:7]=='Unnamed' else c.replace(' ', '_').lower() for c in col1]
-    col2 = list(df.columns.get_level_values(1))
-    col2 = [c.replace(' ', '_').lower() for c in col2]
-    cols = [f'{c}_{col2[i]}' if c != '' else col2[i] for i, c in enumerate(col1)]
+def flatten_cols(df):
+    col_level1 = list(df.columns.get_level_values(0))
+    col_level1 = ['' if c[:7]=='Unnamed' else c.replace(' ', '_').lower() for c in col_level1]
+    col_level2 = list(df.columns.get_level_values(1))
+    col_level2 = [c.replace(' ', '_').lower() for c in col_level2]
+    cols = [f'{c}_{col_level2[i]}' if c != '' else col_level2[i] for i, c in enumerate(col_level1)]
+    cols = [re.sub('[^0-9a-zA-Z]+', '_',
+                   (c.replace('%', '_percent')
+                    .replace('take-on', 'take_on')
+                    .replace('+/-', '_plus_minus_')
+                    .replace('+', '_plus_')
+                    .replace('-', '_minus_')
+                  )).rstrip('_') for c in cols]
     df.columns = cols
-    
-    # remove lines that are the header row repeated
-    df = df[df.rk != 'Rk'].copy()
-    
-    # add the url for the player profile and match logs
-    # https://stackoverflow.com/questions/42285417/how-to-preserve-links-when-scraping-a-table-with-beautiful-soup-and-pandas
-    parsed_table = soup.find_all('table')[0]
+
+def extract_stats(url):
+    soup = get_soup(url)
+    comments = soup.findAll(string=lambda string:isinstance(string, Comment))
+    extracted_comments = [comment.extract() for comment in comments if 'table' in str(comment)]   
+    df = pd.read_html(StringIO(str(extracted_comments[0])))[0]
+    flatten_cols(df)
+    df = df[df['rk'] != 'Rk'].copy()
+    df.drop(['rk', 'matches'], axis='columns', inplace=True)
+    # add player and match links
+    table = BeautifulSoup(extracted_comments[0], 'html.parser')
     data = [[td.a['href'] if td.find('a') else ''.join(td.stripped_strings) for td in row.find_all('td')]
-        for row in parsed_table.find_all('tr')]
+             for row in table.find_all('tr')]
     data = [d for d in data if len(d)!=0]
     match_log = [d[-1] for d in data]
     player_profile = [d[0] for d in data]
     df['match_link'] = match_log
     df['player_link'] = player_profile
-    
-    # remove players who haven't played a minute from the playing time table
-    if 'playing_time_mp' in df.columns:
-        df = df[df.playing_time_mp != '0'].copy()
-        df.reset_index(drop=True, inplace=True)
-        df['rk'] = df.index + 1
-        
-    # drop the matches column
-    df.drop('matches', axis='columns', inplace=True)
-
-    # columns to numeric columns
-    df[df.columns[6:-2]] = df[df.columns[6:-2]].apply(pd.to_numeric, errors='coerce', axis='columns')
     return df
+
+def cols_to_numeric(df):
+    STRING_COLS = ['player', 'nation', 'pos', 'squad', 'match_link', 'player_link']
+    for col in df.columns:
+        if col == 'age':
+            df[col] = pd.to_numeric(df[col].str.split('-').str[0])
+        elif col not in STRING_COLS:
+            df[col] = pd.to_numeric(df[col])
+
+def stats_to_parquet(competition, year, stat, directory='data', sub_directory='fbref'):
+    url = get_url(competition, year, stat)
+    df = extract_stats(url)
+    cols_to_numeric(df)
+    dir_path = os.path.join(directory, sub_directory, competition, str(year))
+    os.makedirs(dir_path, exist_ok=True)
+    file_name = os.path.join(dir_path, f'{stat}.parquet')
+    df.to_parquet(file_name)
 
 def get_fbref_player_dob(url):
     soup = get_soup(url)
@@ -74,92 +125,59 @@ def get_fbref_player_dob(url):
         squad = None
     else:
         squad = squad[0].find('a').contents[0]
-    if info.find("span", itemprop="birthDate"):
-        dob = pd.to_datetime(info.find("span", itemprop="birthDate").contents[0].strip())
+        
+    dob = [span.text.strip() for span in soup.find_all('span') if span.get('id') == 'necro-birth']
+    if dob:
+        dob = pd.to_datetime(dob[0])
     else:
         dob = pd.to_datetime(np.nan)
+
     info = BeautifulSoup(str(info)[:str(info).find('Position')], 'html.parser')
     name = info.find('p').getText()
     if name == '':
         name = info.find('span').getText()
     return name, dob, squad
 
-def get_tm_team_league(soup):
-    """Get the team name and league from a team page."""
-    team_name, league = soup.find("meta", attrs={'name':'keywords'})['content'].split(',')[:2]
-    return team_name, league
-
 def get_tm_team_links(url):
     """Get links for each team from the league page."""
     soup = get_soup(url)
-    table = soup.find_all('table')[3]
-    links = table.find_all('a', class_='vereinprofil_tooltip')
-    links = [l['href'] for l in links]
-    links = list(set(links))
-    links = [f'https://www.transfermarkt.com{l}' for l in links]
+    table = soup.find_all('table')[1]
+    links = [td.find('a').get('href') for td in table.find_all("td", class_='zentriert')
+             if td.find('a') and 'kader' in td.find('a').get('href')]
+    links = [f'https://www.transfermarkt.com{l}/plus/1' for l in links]
     return links
 
 def get_tm_team_squad(url):
-    """ Get the team squad from a team url."""
     soup = get_soup(url)
-    team_name, league = get_tm_team_league(soup)
     table = soup.find_all('table')[1]
-    data = get_data_from_table(table, 'string', 3)
-    
-    # format data as a dataframe
-    df = pd.DataFrame(data) 
-    if len(df.columns) == 14:
-        df = df.drop([2, 6, 7, 11], axis=1)
+    cells = []
+    for td in table.find_all('td', class_='zentriert'):
+        if td.text:
+            cells.append(td.text)
+        elif td.img:
+            cells.append(td.img.get('title'))
+        else:
+            cells.append(None)
+    df = pd.DataFrame(np.array(cells).reshape(-1, 8))
+    if df[4].isin(['right', 'left', 'both']).sum() > 0:
+        df.columns = ['jersey_number', 'date_of_birth_and_age', 'nationality',
+                      'height', 'foot', 'joined', 'signed_from', 'contract']
+        df['current_club'] = None
     else:
-        df = df.drop([2, 6, 10], axis=1)  
-    df.columns = ['number', 'transfer_details', 'player', 'position', 'dob_age', 'height', 'foot',
-                  'joined', 'contract_expires', 'market_value']
-    df['team_name'] = team_name
-    df['league'] = league
-    
-    # get the links and add to the dataframe
-    data2 = get_data_from_table(table, 'link', 3)
-    player_links = [d[3] for d in data2]
-    signed_from = [d[10] for d in data2]
-    df['player_link'] = player_links
-    df['signed_from_link'] = signed_from
-    
-    return df
-
-def get_tm_arrivals_and_departures(url):
-    """Get the team arrivals and departures from a team transfer page."""
-    soup = get_soup(url)
-    team_name, league = get_team_league(soup)
-    
-    # get data from tables
-    tables = soup.find_all('table')
-    # arrivals
-    arrival_table = tables[2]
-    arrival_data = get_data_from_table(arrival_table, 'string', 5)
-    arrival_data_links = get_data_from_table(arrival_table, 'link', 5)
-    # departures
-    departure_table = [t for t in tables if 'Joined' in str(t)][0]
-    departure_data = get_data_from_table(departure_table, 'string', 5)
-    departure_data_links = get_data_from_table(departure_table, 'link', 5)
-       
-    # arrival dataframe
-    df_arrival = pd.DataFrame(arrival_data[:-1])
-    df_arrival.drop([0, 1, 2, 7, 8, 9], axis='columns', inplace=True)
-    df_arrival.columns = ['player', 'pos', 'age', 'market_value', 'left', 'left_league', 'fee']
-    arrival_player_links = [d[1] for d in arrival_data_links[:-1]]
-    df_arrival['player_link'] = arrival_player_links
-    df_arrival['joined'] = team_name
-    df_arrival['joined_league'] = league
-    
-    # departure dataframe
-    df_departure =  pd.DataFrame(departure_data[:-1])
-    df_departure.drop([0, 1, 2, 7, 8, 9], axis='columns', inplace=True)
-    df_departure.columns = ['player', 'pos', 'age', 'market_value', 'joined', 'joined_league', 'fee']
-    departure_player_links = [d[1] for d in departure_data_links[:-1]]
-    df_departure['player_link'] = departure_player_links
-    df_departure['left'] = team_name
-    df_departure['left_league'] = league
-    
-    df = pd.concat([df_arrival, df_departure])
-    
+        df.columns = ['jersey_number', 'date_of_birth_and_age', 'nationality',
+                      'current_club', 'height', 'foot', 'joined', 'signed_from']
+        df['contract'] = None
+    df['player'] = [tab.find('img').get('title') 
+                    for tab in soup.find_all('table', class_='inline-table')]
+    df['position'] = [tab.find_all('td')[-1].text.strip()
+                      for tab in soup.find_all('table', class_='inline-table')]
+    df['player_url'] = [td.find('a').get('href') 
+                        for td in table.find_all('td', attrs={'class': 'hauptlink'}) 
+                        if 'rechts' not in td.attrs['class']]
+    df['market_value'] = [td.text for td in table.find_all('td', class_='rechts hauptlink')]
+    df['team_name'] = soup.find("meta", attrs={'name':'keywords'})['content'].split(',')[0]
+    df = df[['team_name', 'jersey_number', 'player', 'position',
+             'date_of_birth_and_age', 'nationality', 'current_club', 'height',
+             'foot', 'joined',
+             'signed_from', 'contract', 'market_value', 'player_url']]
     return df
